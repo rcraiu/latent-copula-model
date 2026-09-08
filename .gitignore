@@ -1,0 +1,19 @@
+# Generated output: fits, figures, tables and logs are all reproducible
+# by re-running the scripts, so they are not tracked.
+output/
+application-nhanes/data/
+
+# R session artefacts
+.Rhistory
+.RData
+.Rapp.history
+.Rproj.user/
+*.Rproj
+
+# Compiled Rcpp objects
+*.o
+*.so
+*.dll
+
+# macOS
+.DS_Store
