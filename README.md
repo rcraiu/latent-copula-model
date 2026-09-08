@@ -68,10 +68,12 @@ Rscript application-nhanes/build_data.R
 # 2. Descriptive figures.
 Rscript application-nhanes/eda.R
 
-# 3. Fit five copula families, two chains each. See the runtime note below.
+# 3. Fit seven copula models, two chains each. See the runtime note below.
+#    Clayton and Gaussian need M=2000000; see "What remains" below.
 M=600000 ./application-nhanes/run_batch.sh \
     Gaussian:1 Gaussian:2 Clayton:1 Clayton:2 Frank:1 Frank:2 \
-    Gumbel:1 Gumbel:2 Independence:1 Independence:2
+    Gumbel:1 Gumbel:2 Joe:1 Joe:2 SurvClayton:1 SurvClayton:2 \
+    Independence:1 Independence:2
 
 # 4. Convergence diagnostics, model comparison, figures and LaTeX tables.
 Rscript application-nhanes/results.R
@@ -151,17 +153,40 @@ original componentwise R sampler (`benchmarks/bench_crossblock.R`, M = 20000):
 The Frank ordering is within the noise of an effective sample size estimated at
 these magnitudes and should not be read as a real reversal.
 
-**What remains.** Even with all four changes the minimum effective sample size is
-roughly 20 to 33 per 10,000 retained draws, an integrated autocorrelation time in
-the hundreds. This is why the reported analysis uses 600,000 iterations per chain
-with the first half discarded, rather than the tens of thousands that the
-acceptance rates alone might suggest are adequate. Acceptance rates near their
-targets are *not* evidence of adequate mixing in this model, and we recommend
-checking effective sample size and the Gelman-Rubin statistic across chains
-before interpreting any fit. A further improvement, not implemented here, would
-be a non-centered parameterisation of `W`: `beta` is drawn conjugately given `W`
-while each `W_i` moves by single-site random walk, which is the classic slow
-configuration for a hierarchical model with a large number of latent variables.
+**What remains, and how long to run.** Even with all four changes the minimum
+effective sample size is only a few tens per 10,000 retained draws, an integrated
+autocorrelation time in the hundreds. This is why the analysis uses 600,000
+iterations per chain with the first half discarded, rather than the tens of
+thousands that the acceptance rates alone might suggest are adequate. Acceptance
+rates near their targets are *not* evidence of adequate mixing in this model, and
+effective sample size and the Gelman-Rubin statistic across chains should be
+checked before interpreting any fit.
+
+How long is enough turns out to depend on the copula, in a way that is itself
+informative. At 600,000 iterations:
+
+| Model | Gelman-Rubin | min ESS | posterior mean of `alpha` |
+|---|---|---|---|
+| Gumbel | 1.007 | 728 | 70 |
+| Frank | 1.008 | 453 | 230 |
+| Independence | 1.015 | 331 | 362 |
+| Gaussian | 1.098 | 95 | 133 |
+| Clayton | 1.261 | 122 | 265 |
+
+The two that failed are the two that fit worst, and this is not a coincidence. A
+copula that cannot represent the dependence in the data leaves that dependence to
+be absorbed by the gamma shape `alpha`, which is then only weakly identified: the
+95% credible interval for `alpha` under Clayton runs from 149 to 771, against 55
+to 91 under Gumbel. A weakly identified `alpha` is exactly what makes the ridge
+flat and the chain slow. So poor mixing here is a symptom of misspecification, and
+worth reporting as such rather than only as a computational nuisance. Clayton and
+Gaussian were rerun at 2,000,000 iterations, after which all models satisfy
+Gelman-Rubin below 1.05.
+
+A further improvement, not implemented here, would be a non-centered
+parameterisation of `W`: `beta` is drawn conjugately given `W` while each `W_i`
+moves by single-site random walk, which is the classic slow configuration for a
+hierarchical model with a large number of latent variables.
 
 ## A note on the model comparison criteria
 

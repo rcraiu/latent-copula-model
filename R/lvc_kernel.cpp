@@ -16,9 +16,10 @@
 using namespace Rcpp;
 
 static const double CLAMP  = 1e-12;
-static const double ZCLAMP = 7.0339021663017056;  // qnorm(1 - 1e-12)
+static const double ZCLAMP = 7.0344869100478356;  // qnorm(1 - 1e-12)
 
-enum Family { GAUSSIAN = 0, CLAYTON = 1, FRANK = 2, GUMBEL = 3, INDEP = 4 };
+enum Family { GAUSSIAN = 0, CLAYTON = 1, FRANK = 2, GUMBEL = 3, INDEP = 4,
+              JOE = 5, SURVCLAYTON = 6 };
 enum What   { JOINT = 0, Q_GIVEN_Y = 1, Y_GIVEN_Q = 2 };
 
 static inline double clamp01(double u) {
@@ -39,6 +40,8 @@ static inline double theta_of(double w, double xi0, double xi1,
     }
     case FRANK:   return (std::fabs(lin) < 1e-6) ? 1e-6 : lin;
     case GUMBEL:  return 1.0 + std::exp(lin);
+    case JOE:         return 1.0 + std::exp(lin);
+    case SURVCLAYTON: return std::exp(lin);
     case CLAYTON: return std::exp(lin);
     default:      return 0.0;
   }
@@ -81,6 +84,22 @@ static inline double log_cop(double u1, double u2, double z1, double z2,
       double den = std::expm1(-t * u1) * std::expm1(-t * u2) + g1;
       if (!(num > 0.0)) return R_NegInf;
       return std::log(num) - 2.0 * std::log(std::fabs(den));
+    }
+    case JOE: {
+      double t = th < 1.0 + 1e-10 ? 1.0 + 1e-10 : th;
+      double a = std::log1p(-u1), b = std::log1p(-u2);
+      double ea = std::exp(t * a), eb = std::exp(t * b);
+      double A = ea * (-std::expm1(t * b)) + eb;
+      if (!(A > 0.0)) return R_NegInf;
+      return (1.0 / t - 2.0) * std::log(A) + (t - 1.0) * (a + b)
+             + std::log(t - 1.0 + A);
+    }
+    case SURVCLAYTON: {
+      double t = th < 1e-10 ? 1e-10 : th;
+      double a = std::log1p(-u1), b = std::log1p(-u2);
+      double A = std::exp(-t * a) + std::exp(-t * b) - 1.0;
+      if (!(A > 0.0)) return R_NegInf;
+      return std::log1p(t) - (1.0 + t) * (a + b) - (2.0 + 1.0 / t) * std::log(A);
     }
     default: return 0.0;
   }

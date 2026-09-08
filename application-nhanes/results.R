@@ -16,8 +16,19 @@ dir.create("output/tables", recursive = TRUE, showWarnings = FALSE)
 
 NH <- readRDS("application-nhanes/nhanes_kidney.rds")
 q <- NH$q; y <- NH$y; X <- NH$X; n <- length(q)
-fams <- c("Gaussian", "Clayton", "Frank", "Gumbel", "Independence")
+fams <- c("Gaussian", "Clayton", "Frank", "Gumbel", "Joe", "SurvClayton",
+          "Independence")
 CHAINS <- 1:2
+
+## Restrict to families with a complete set of chains, so that the script is
+## usable while some fits are still running.
+have <- vapply(fams, function(f)
+  all(file.exists(file.path(FITDIR, sprintf("%s_chain%d.rds", f, CHAINS)))),
+  logical(1))
+if (any(!have))
+  cat("skipping (no fits):", paste(fams[!have], collapse = ", "), "\n")
+fams <- fams[have]
+stopifnot(length(fams) > 0)
 
 ## ---------------------------------------------------------------- criteria --
 simpson_w <- function(k) c(1, rep(c(4, 2), length.out = k - 2), 1) / 3

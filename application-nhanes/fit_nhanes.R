@@ -28,7 +28,7 @@ q  <- NH$q          # cystatin C (mg/L)          -> gamma margin
 y  <- NH$y          # log serum creatinine       -> normal margin
 X  <- NH$X          # age, female, BMI, SBP (standardised, no intercept)
 
-dir.create("output/fits", recursive = TRUE, showWarnings = FALSE)
+dir.create("fits", showWarnings = FALSE)
 out <- sprintf("output/fits/%s_chain%d.rds", family, chain)
 
 cat(sprintf("fitting %s, chain %d, n = %d, M = %d, engine = %s, proposal = %s\n",

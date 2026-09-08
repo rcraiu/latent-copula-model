@@ -14,7 +14,8 @@ source("R/lvc_gamma_gauss.R")
 
 NH <- readRDS("application-nhanes/nhanes_kidney.rds")
 q <- NH$q; y <- NH$y; X <- NH$X; n <- length(q)
-fams <- c("Gaussian", "Clayton", "Frank", "Gumbel", "Independence")
+fams <- c("Gaussian", "Clayton", "Frank", "Gumbel", "Joe", "SurvClayton",
+          "Independence")
 
 simpson_w <- function(k) {                       # weights for k odd points
   w <- c(1, rep(c(4, 2), length.out = k - 2), 1)

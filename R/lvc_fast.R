@@ -5,8 +5,9 @@
 suppressMessages(library(Rcpp))
 source("R/copula_densities.R")
 
+## must match enum Family in lvc_sampler.cpp
 FAMILY_CODE <- c(Gaussian = 0L, Clayton = 1L, Frank = 2L, Gumbel = 3L,
-                 Independence = 4L)
+                 Independence = 4L, Joe = 5L, SurvClayton = 6L)
 
 if (!exists(".lvc_compiled")) {
   sourceCpp("R/lvc_sampler.cpp")

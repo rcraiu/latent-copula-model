@@ -25,6 +25,9 @@ theta_of_w <- function(w, xi, family, gscale = 0.1) {
     Frank       = ifelse(abs(lin) < 1e-6, 1e-6, lin),
     Gumbel      = 1 + exp(lin),
     Clayton     = exp(lin),
+    ## Joe shares Gumbel's parameter space, survival Clayton shares Clayton's
+    Joe         = 1 + exp(lin),
+    SurvClayton = exp(lin),
     Independence = rep(0, length(w)),
     stop("unknown family: ", family)
   )
@@ -73,6 +76,35 @@ log_c_Frank <- function(u1, u2, th) {
   d
 }
 
+## Joe: upper tail dependence 2 - 2^(1/th), no lower tail dependence.
+## c = A^(1/th - 2) ub^(th-1) vb^(th-1) (th - 1 + A),
+##   A = ub^th + vb^th - ub^th vb^th,  ub = 1 - u1, vb = 1 - u2.
+## A is accumulated as ub^th (1 - vb^th) + vb^th, a sum of positive terms, to
+## avoid the cancellation that the written form suffers when th is large.
+log_c_Joe <- function(u1, u2, th) {
+  a <- log1p(-clamp01(u1)); b <- log1p(-clamp01(u2))   # log ub, log vb
+  th <- pmax(th, 1 + 1e-10)
+  ea <- exp(th * a); eb <- exp(th * b)
+  A <- ea * (-expm1(th * b)) + eb
+  d <- (1 / th - 2) * log(A) + (th - 1) * (a + b) + log(th - 1 + A)
+  d[!is.finite(A) | A <= 0] <- -Inf
+  d[!is.finite(d)] <- -Inf
+  d
+}
+
+## Survival (180 degree rotated) Clayton: the Clayton density in 1 - u.
+## Included because Clayton's lower tail dependence is the wrong orientation
+## for these data, so this isolates orientation from family.
+log_c_SurvClayton <- function(u1, u2, th) {
+  a <- log1p(-clamp01(u1)); b <- log1p(-clamp01(u2))
+  th <- pmax(th, 1e-10)
+  A <- exp(-th * a) + exp(-th * b) - 1
+  d <- log1p(th) - (1 + th) * (a + b) - (2 + 1 / th) * log(A)
+  d[!is.finite(A) | A <= 0] <- -Inf
+  d[!is.finite(d)] <- -Inf
+  d
+}
+
 log_c_Independence <- function(u1, u2, th) rep(0, length(u1))
 
 log_copula_density <- function(u1, u2, th, family) {
@@ -81,6 +113,8 @@ log_copula_density <- function(u1, u2, th, family) {
     Clayton      = log_c_Clayton(u1, u2, th),
     Gumbel       = log_c_Gumbel(u1, u2, th),
     Frank        = log_c_Frank(u1, u2, th),
+    Joe          = log_c_Joe(u1, u2, th),
+    SurvClayton  = log_c_SurvClayton(u1, u2, th),
     Independence = log_c_Independence(u1, u2, th),
     stop("unknown family: ", family)
   )
@@ -101,6 +135,9 @@ if (sys.nframe() == 0) {
   chk("Clayton",  3,  2.0);  chk("Clayton",  3,  0.5)
   chk("Gumbel",   4,  1.8);  chk("Gumbel",   4,  3.0)
   chk("Frank",    5,  4.0);  chk("Frank",    5, -3.0)
+  ## VineCopula: 6 = Joe, 13 = survival (180 degree) Clayton
+  chk("Joe",         6,  2.0); chk("Joe",         6,  5.0)
+  chk("SurvClayton", 13, 2.0); chk("SurvClayton", 13, 0.5)
   cat("Independence max abs =",
       max(abs(log_copula_density(u1, u2, rep(0, 200), "Independence"))), "\n")
 }

@@ -1,7 +1,8 @@
 ## Convergence diagnostics and posterior summaries across the two chains.
 suppressMessages(library(coda))
 
-fams <- c("Gaussian", "Clayton", "Frank", "Gumbel", "Independence")
+fams <- c("Gaussian", "Clayton", "Frank", "Gumbel", "Joe", "SurvClayton",
+          "Independence")
 tr <- function(p) {                       # report on the interpretable scale
   out <- p
   rownames(out)[rownames(out) == "lalpha"] <- "alpha"

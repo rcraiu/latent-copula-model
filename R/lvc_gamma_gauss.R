@@ -25,9 +25,14 @@ TARGET_ACC <- 0.44
 ## fixed, and the copula block leaves both margins fixed.
 comp_q <- function(q, W, p) {
   alpha <- exp(p[["lalpha"]])
-  rate  <- alpha / exp(p[["muq"]] + p[["lamq"]] * W)
-  list(lf = dgamma(q, shape = alpha, rate = rate, log = TRUE),
-       u  = pgamma(q, shape = alpha, rate = rate))
+  ## Parameterised by scale rather than rate so that this agrees bit for bit
+  ## with lvc_sampler.cpp. The two are reciprocals, but 1/(alpha/b) and b/alpha
+  ## differ in the last bit, and for large shape in the tail of pgamma that
+  ## difference is enough to flip a Metropolis decision and send the two
+  ## implementations down separate paths.
+  scale <- exp(p[["muq"]] + p[["lamq"]] * W) / alpha
+  list(lf = dgamma(q, shape = alpha, scale = scale, log = TRUE),
+       u  = pgamma(q, shape = alpha, scale = scale))
 }
 comp_y <- function(y, W, p) {
   my <- p[["muy"]] + p[["lamy"]] * W; sig <- exp(p[["lsigma"]])

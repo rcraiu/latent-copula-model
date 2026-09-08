@@ -6,10 +6,11 @@ Run from the repository root.
 
 | Script | Checks |
 |---|---|
-| `test_kernel.R` | The C++ density kernel against the R implementation, and both against `VineCopula` at fixed parameters |
-| `test_fast.R` | The full C++ sampler against the reference R sampler, same seed, all five families |
+| `test_families.R` | Densities R against C++, sampler paths R against C++, and densities against `VineCopula`, for all six copula families. This is the one to run after touching any density code. |
+| `test_kernel.R` | The C++ density kernel against the R implementation |
+| `test_fast.R` | The full C++ sampler against the reference R sampler, same seed |
 
-`test_fast.R` is the more demanding check. Both samplers consume the random
+`test_families.R` is the more demanding check. Both samplers consume the random
 number stream in the same order, so with `proposal = "component"` their entire
 parameter paths should agree, not merely their posterior summaries. Observed
 agreement is about 1e-7 over 2000 iterations. The residual is the C++ version

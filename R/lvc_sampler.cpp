@@ -27,18 +27,19 @@
 using namespace Rcpp;
 
 static const double CLAMP  = 1e-12;
-static const double ZCLAMP = 7.0339021663017056;   // qnorm(1 - 1e-12)
+static const double ZCLAMP = 7.0344869100478356;   // qnorm(1 - 1e-12)
 static const double LOG_SQRT_2PI = 0.9189385332046727;
 
-enum Family { GAUSSIAN = 0, CLAYTON = 1, FRANK = 2, GUMBEL = 3, INDEP = 4 };
+enum Family { GAUSSIAN = 0, CLAYTON = 1, FRANK = 2, GUMBEL = 3, INDEP = 4,
+              JOE = 5, SURVCLAYTON = 6 };
 
 // Optimal acceptance rates for a random walk in d dimensions (Roberts, Gelman &
 // Gilks 1997): 0.44 for a scalar update, falling to 0.234 as d grows. Indexed by
 // block length; only lengths 2 and 3 occur here.
 static const double BLOCK_TARGET[4] = {0.44, 0.44, 0.352, 0.316};
 
-static const char* FAMILY_NAME[5] =
-  {"Gaussian", "Clayton", "Frank", "Gumbel", "Independence"};
+static const char* FAMILY_NAME[7] =
+  {"Gaussian", "Clayton", "Frank", "Gumbel", "Independence", "Joe", "SurvClayton"};
 
 static inline double clamp01(double u) {
   if (u < CLAMP) return CLAMP;
@@ -59,12 +60,17 @@ static inline double theta_of(double w, double xi0, double xi1,
     case FRANK:   return (std::fabs(lin) < 1e-6) ? 1e-6 : lin;
     case GUMBEL:  return 1.0 + std::exp(lin);
     case CLAYTON: return std::exp(lin);
+    case JOE:         return 1.0 + std::exp(lin);   // shares Gumbel's range
+    case SURVCLAYTON: return std::exp(lin);         // shares Clayton's range
     default:      return 0.0;
   }
 }
 
 // Log copula density from cached pieces: z1, z2 are the normal scores and
-// lu1, lu2 the logs of the pseudo-observations.
+// lu1, lu2 the logs of the pseudo-observations -- except for Joe and survival
+// Clayton, whose densities depend on the pseudo-observations only through
+// 1 - u, for which lu1 and lu2 hold log(1 - u) instead. Since a run uses one
+// family throughout, the slot is reused rather than duplicated.
 static inline double log_cop(double u1, double u2, double lu1, double lu2,
                              double z1, double z2, double th, int family) {
   switch (family) {
@@ -99,6 +105,23 @@ static inline double log_cop(double u1, double u2, double lu1, double lu2,
       if (!(num > 0.0)) return R_NegInf;
       return std::log(num) - 2.0 * std::log(std::fabs(den));
     }
+    case JOE: {
+      // lu1, lu2 hold log(1-u1), log(1-u2)
+      const double t = th < 1.0 + 1e-10 ? 1.0 + 1e-10 : th;
+      const double ea = std::exp(t * lu1), eb = std::exp(t * lu2);
+      // A = ea (1 - eb) + eb, a sum of positive terms
+      const double A = ea * (-std::expm1(t * lu2)) + eb;
+      if (!(A > 0.0)) return R_NegInf;
+      return (1.0 / t - 2.0) * std::log(A) + (t - 1.0) * (lu1 + lu2)
+             + std::log(t - 1.0 + A);
+    }
+    case SURVCLAYTON: {
+      // the Clayton form evaluated at 1-u, whose logs are in lu1, lu2
+      const double t = th < 1e-10 ? 1e-10 : th;
+      const double A = std::exp(-t * lu1) + std::exp(-t * lu2) - 1.0;
+      if (!(A > 0.0)) return R_NegInf;
+      return std::log1p(t) - (1.0 + t) * (lu1 + lu2) - (2.0 + 1.0 / t) * std::log(A);
+    }
     default: return 0.0;
   }
 }
@@ -117,6 +140,7 @@ struct Model {
   int n, family;
   double gscale;
   bool need_u;                            // do the copula formulas need u/log u?
+  bool need_ubar;                         // ... and as log(1-u) rather than log u?
 
   void fill_q(std::vector<double>& lf1, std::vector<double>& u1,
               std::vector<double>& lu1, std::vector<double>& z1,
@@ -127,7 +151,7 @@ struct Model {
       const double u = clamp01(R::pgamma(q[i], alpha, scale, 1, 0));
       u1[i]  = u;
       if (family == GAUSSIAN) z1[i] = R::qnorm(u, 0.0, 1.0, 1, 0);
-      if (need_u)             lu1[i] = std::log(u);
+      if (need_u) lu1[i] = need_ubar ? std::log1p(-u) : std::log(u);
     }
   }
 
@@ -144,7 +168,7 @@ struct Model {
       if (need_u) {
         const double u = clamp01(R::pnorm(z, 0.0, 1.0, 1, 0));
         u2[i]  = u;
-        lu2[i] = std::log(u);
+        lu2[i] = need_ubar ? std::log1p(-u) : std::log(u);
       }
     }
   }
@@ -210,7 +234,8 @@ List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
   Model mod;
   mod.q = &q[0]; mod.y = &y[0]; mod.n = n; mod.family = family;
   mod.gscale = gscale;
-  mod.need_u = (family == CLAYTON || family == FRANK || family == GUMBEL);
+  mod.need_u    = (family != GAUSSIAN && family != INDEP);
+  mod.need_ubar = (family == JOE || family == SURVCLAYTON);
 
   const double s2_mu = prior["s2_mu"], s2_lam = prior["s2_lam"],
                s2_xi = prior["s2_xi"], a_alpha = prior["a_alpha"],
