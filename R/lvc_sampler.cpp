@@ -37,6 +37,9 @@ enum Family { GAUSSIAN = 0, CLAYTON = 1, FRANK = 2, GUMBEL = 3, INDEP = 4 };
 // block length; only lengths 2 and 3 occur here.
 static const double BLOCK_TARGET[4] = {0.44, 0.44, 0.352, 0.316};
 
+static const char* FAMILY_NAME[5] =
+  {"Gaussian", "Clayton", "Frank", "Gumbel", "Independence"};
+
 static inline double clamp01(double u) {
   if (u < CLAMP) return CLAMP;
   if (u > 1.0 - CLAMP) return 1.0 - CLAMP;
@@ -469,7 +472,7 @@ List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
     }
 
     if (verbose > 0 && t % verbose == 0)
-      Rcpp::Rcout << "  [" << family << "] " << t << "/" << M
+      Rcpp::Rcout << "  [" << FAMILY_NAME[family] << "] " << t << "/" << M
                   << "  loglik " << cur_ll << "\n";
     if (t % 1000 == 0) Rcpp::checkUserInterrupt();
   }

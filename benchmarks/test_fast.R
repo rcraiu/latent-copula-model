@@ -30,5 +30,6 @@ for (fam in c("Gaussian", "Gumbel")) {
     bb <- run_lvc_fast(q, y, X, family = fam, M = M, burn = M / 2, seed = 99,
                        verbose = 0, blockwise = TRUE))[["elapsed"]]
   cat(sprintf("%-13s blockwise %6.2fs   acceptance: %s\n", fam, tb,
-              paste(sprintf("%.2f", bb$acc_blocks[1:6]), collapse = " ")))
+              paste(names(bb$acc_blocks), sprintf("%.2f", bb$acc_blocks),
+                    collapse = " ")))
 }
