@@ -24,8 +24,8 @@ engine   <- if (length(args) >= 4) args[4] else "cpp"
 proposal <- if (length(args) >= 5) args[5] else "block"
 
 NH <- readRDS("application-nhanes/nhanes_kidney.rds")
-q  <- NH$q          # cystatin C (mg/L)          -> gamma margin
-y  <- NH$y          # log serum creatinine       -> normal margin
+q  <- NH$q          # cystatin C (mg/L)            -> gamma margin
+y  <- NH$y          # log beta-2 microglobulin     -> normal margin
 X  <- NH$X          # age, female, BMI, SBP (standardised, no intercept)
 
 dir.create("fits", showWarnings = FALSE)
