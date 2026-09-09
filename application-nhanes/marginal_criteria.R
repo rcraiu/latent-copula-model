@@ -9,6 +9,17 @@
 ## which we evaluate by adaptive Simpson quadrature. The integrand is sharply
 ## peaked (its width is of order 1/(lam_q sqrt(alpha))), so we first locate its
 ## mode on a coarse grid and then integrate on a fine grid around the mode.
+##
+## The half-width of that fine grid matters more than its node count, and by a
+## wide margin. The error at half = 1.6 is almost entirely truncation rather
+## than discretisation: refining 81 nodes to 401 at that half-width changes the
+## total by less than 0.001, whereas widening to half = 4.0 at 81 nodes changes
+## it by up to 500. Worse, the truncation error is strongly family dependent --
+## at half = 1.6 it is 2 for the independence copula but 261 for Frank and 524
+## for Gaussian -- so it does not cancel in a model comparison and is large
+## enough to reorder the families outright. The window is therefore taken wide
+## enough that the check below passes for every family, which costs nothing,
+## since the node count can stay where it was.
 
 source("R/lvc_gamma_gauss.R")
 
@@ -26,7 +37,7 @@ simpson_w <- function(k) {                       # weights for k odd points
 log_integrand <- function(w, p, m, family)
   lvc_logdens(q, y, w, p, family, 0.1, "joint") - 0.5 * (w - m)^2 - 0.9189385332
 
-log_marg <- function(p, beta, family, half = 1.6, kf = 81, kc = 49) {
+log_marg <- function(p, beta, family, half = 4.0, kf = 81, kc = 49) {
   m <- as.numeric(X %*% beta)
   ## coarse pass: locate the mode of the integrand for each observation
   gc <- seq(-6, 6, length.out = kc)
@@ -49,17 +60,24 @@ log_marg <- function(p, beta, family, half = 1.6, kf = 81, kc = 49) {
   mx + log(h * acc)
 }
 
-## ---- accuracy check on a subsample, coarse vs fine ------------------------
-fit <- readRDS("output/fits/Independence_chain1.rds")
-p0 <- fit$PAR[1:8, fit$M]; names(p0) <- rownames(fit$PAR)[1:8]
-b0 <- fit$PAR[9:12, fit$M]
-a1 <- log_marg(p0, b0, "Independence", half = 1.6, kf = 81)
-a2 <- log_marg(p0, b0, "Independence", half = 2.4, kf = 401)
-cat("quadrature check (Independence, tightest integrand):\n")
-cat("  max |log p difference| between 81 and 401 nodes:",
-    signif(max(abs(a1 - a2)), 3), "\n")
-cat("  sum difference:", signif(sum(a1) - sum(a2), 4), "on a total of",
-    round(sum(a2), 1), "\n\n")
+## ---- accuracy check: every family, against a much wider and finer grid ----
+## Checking only one family would be misleading, since the truncation error
+## depends on the family through the tail behaviour of the copula density.
+cat("quadrature check (posterior mean parameters, each family):\n")
+worst <- 0
+for (f in fams) {
+  fit <- readRDS(sprintf("output/fits/%s_chain1.rds", f))
+  pm  <- rowMeans(fit$PAR[, (fit$burn + 1):fit$M, drop = FALSE])
+  p0  <- pm[1:8]; names(p0) <- rownames(fit$PAR)[1:8]; b0 <- pm[9:12]
+  a1  <- log_marg(p0, b0, f)
+  a2  <- log_marg(p0, b0, f, half = 6.0, kf = 1201)
+  cat(sprintf("  %-13s total %10.2f   error %+8.4f   max pointwise %.2e\n",
+              f, sum(a1), sum(a1) - sum(a2), max(abs(a1 - a2))))
+  worst <- max(worst, abs(sum(a1) - sum(a2)))
+}
+cat(sprintf("  worst total error %.4f, against model separations of order 10\n\n", worst))
+if (worst > 1) warning("quadrature error is large relative to model differences")
+
 
 ## ---- criteria -------------------------------------------------------------
 ## Wsamp column j holds W at iteration burn + j*thin_W, so the parameter draw
@@ -114,4 +132,4 @@ rc_ <- res[order(res$WAIC_c), ]
 print(data.frame(family = rc_$family, WAIC = round(rc_$WAIC_c, 1),
                  dWAIC = round(rc_$WAIC_c - min(rc_$WAIC_c), 1),
                  CVML = round(rc_$CVML_c, 1), row.names = NULL))
-saveRDS(res, "output/marginal_criteria.rds")
+saveRDS(res, "marginal_criteria.rds")

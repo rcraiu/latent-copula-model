@@ -10,9 +10,9 @@
 source("R/lvc_gamma_gauss.R")
 suppressMessages({library(coda); library(ggplot2)})
 
-FITDIR <- if (length(commandArgs(TRUE))) commandArgs(TRUE)[1] else "output/fits"
-dir.create("output/figs", recursive = TRUE, showWarnings = FALSE)
-dir.create("output/tables", recursive = TRUE, showWarnings = FALSE)
+FITDIR <- if (length(commandArgs(TRUE))) commandArgs(TRUE)[1] else "fits"
+dir.create("figs", showWarnings = FALSE)
+dir.create("output/tables", showWarnings = FALSE)
 
 NH <- readRDS("application-nhanes/nhanes_kidney.rds")
 q <- NH$q; y <- NH$y; X <- NH$X; n <- length(q)
@@ -33,7 +33,7 @@ stopifnot(length(fams) > 0)
 ## ---------------------------------------------------------------- criteria --
 simpson_w <- function(k) c(1, rep(c(4, 2), length.out = k - 2), 1) / 3
 
-log_marg <- function(p, beta, family, half = 1.6, kf = 81, kc = 49) {
+log_marg <- function(p, beta, family, half = 4.0, kf = 81, kc = 49) {
   m <- as.numeric(X %*% beta)
   li <- function(t) lvc_logdens(q, y, m + t, p, family, 0.1) -
                     0.5 * t^2 - 0.9189385332
@@ -190,8 +190,8 @@ band <- function(M, lab, file) {
     labs(x = expression("latent renal impairment "*W), y = lab) + base
   ggsave(file, p, width = 5.2, height = 3.8, dpi = 300)
 }
-band(TH, expression("copula parameter "*theta*"("*W*")"), "output/figs/NHANES_theta_of_W.png")
-band(TA, expression("Kendall's "*tau*"("*W*")"), "output/figs/NHANES_tau_of_W.png")
+band(TH, expression("copula parameter "*theta*"("*W*")"), "figs/NHANES_theta_of_W.png")
+band(TA, expression("Kendall's "*tau*"("*W*")"), "figs/NHANES_tau_of_W.png")
 
 Wm <- rowMeans(sapply(L$fits, function(f) f$Wmean))
 dd <- data.frame(W = Wm, egfr = NH$dat$egfr, age = NH$dat$age)
@@ -200,10 +200,14 @@ p <- ggplot(dd, aes(egfr, W)) +
   geom_smooth(method = "gam", formula = y ~ s(x), colour = "black", linewidth = .7) +
   labs(x = expression("CKD-EPI eGFR (mL/min/1.73"*m^2*")"),
        y = expression("posterior mean of "*W)) + base
-ggsave("output/figs/NHANES_W_vs_eGFR.png", p, width = 5.2, height = 3.8, dpi = 300)
-cat("\nSpearman(W, eGFR) =", round(cor(Wm, NH$dat$egfr, method = "spearman"), 3), "\n")
+ggsave("application-nhanes/figs/NHANES_W_vs_eGFR.png", p, width = 5.2, height = 3.8, dpi = 300)
+## 12 subjects have no creatinine and hence no eGFR, so drop them for this
+## check rather than propagating an NA.
+cat("\nSpearman(W, eGFR) =",
+    round(cor(Wm, NH$dat$egfr, method = "spearman", use = "complete.obs"), 3),
+    sprintf("(on %d subjects with an eGFR)\n", sum(!is.na(NH$dat$egfr))))
 
-png("output/figs/NHANES_trace.png", width = 1900, height = 1300, res = 165)
+png("figs/NHANES_trace.png", width = 1900, height = 1300, res = 165)
 op <- par(mfrow = c(3, 4), mar = c(3.4, 3.4, 2, 1), mgp = c(2.1, .7, 0))
 for (v in rownames(S)) {
   plot(L$post[[1]][v, seq(1, ncol(L$post[[1]]), by = 50)], type = "l",
@@ -212,5 +216,5 @@ for (v in rownames(S)) {
 }
 par(op); dev.off()
 
-saveRDS(list(crit = crit, summ = summ, diagn = diagn, best = best), "output/results.rds")
+saveRDS(list(crit = crit, summ = summ, diagn = diagn, best = best), "results.rds")
 cat("\ntables/ and figs/ written; best model:", best, "\n")

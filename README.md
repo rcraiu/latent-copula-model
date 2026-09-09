@@ -19,9 +19,9 @@ This repository covers two specialisations. The **mixed-response** case, with a
 Poisson count margin and a normal margin, requires data augmentation and is
 applied to cardiotocography data. The **continuous-continuous** case, with a
 gamma margin and a normal margin, requires no augmentation and is applied to
-NHANES kidney-function data, where serum cystatin C and serum beta-2
-microglobulin are two surrogates for the unobservable glomerular filtration
-rate. Serum creatinine, the marker used clinically, is deliberately *not* one of
+NHANES kidney-function data, where the reciprocals of serum cystatin C and
+serum beta-2 microglobulin are two surrogates for the unobservable glomerular
+filtration rate. Serum creatinine, the marker used clinically, is deliberately *not* one of
 the surrogates: it depends on muscle mass and so on the same age and sex that
 serve as covariates for the latent variable, and it is reported on a grid coarse
 enough that a continuous margin cannot represent it. See

@@ -3,22 +3,36 @@
 ## The latent variable W is (unobservable) renal impairment, the reciprocal
 ## scale of the glomerular filtration rate, for which the two continuous
 ## surrogates are two low-molecular-weight serum proteins:
-##   Q = cystatin C (mg/L)             -- gamma margin, log link
-##   Y = log beta-2 microglobulin      -- normal margin
+##   Q = 1 / cystatin C            -- gamma margin, log link
+##   Y = 1 / beta-2 microglobulin  -- normal margin
 ## Covariates: age, sex, BMI, systolic blood pressure.
 ##
-## Which marker takes which margin is a modelling choice, and the two possible
-## assignments were compared before fitting. Writing both as densities for the
-## pair, so that the comparison is on a common scale, the assignment above has
-## total AIC 609 against 947 for the reverse, and it also balances the
-## calibration of the two margins rather than making one much the worse: the
-## Kolmogorov-Smirnov distances of the probability integral transforms from
-## uniformity are 0.055 and 0.054, against 0.074 and 0.038 for the reverse.
-## The reason is that the gamma margin has a shape parameter with which to
-## absorb positive skew, whereas the normal margin has none, so it is the
-## more strongly skewed marker, beta-2 microglobulin, that gains most from
-## being placed on the log scale.
+## Both surrogates are on the reciprocal scale, and W is accordingly oriented as
+## the latent filtration rate itself rather than as impairment: both markers
+## increase with it. The reason is physiological before it is statistical. The
+## serum concentration of a marker cleared by the kidneys is inversely
+## proportional to the filtration rate, so it is the reciprocal of the
+## concentration, not the concentration or its logarithm, that is linear in
+## filtration; slopes of reciprocal serum creatinine against time are used
+## clinically for precisely this reason, to track the progression of chronic
+## kidney disease.
 ##
+## The statistical case agrees, and it matters because the normal margin is the
+## rigid one: Y given W is normal and W is normal, so the model implies a
+## symmetric marginal distribution for Y and cannot do otherwise. Writing both
+## margins as densities for the observed pair, so that specifications on
+## different scales are comparable, the total AIC is 609 with Y on the log
+## scale, -145 with Y reciprocal and Q left as a concentration, and -526 with
+## both reciprocal. The probability integral transforms of the two margins have
+## Kolmogorov-Smirnov distances from uniformity of 0.029 and 0.021 under the
+## specification used here, against 0.055 and 0.054 on the log scale.
+##
+## This was not a cosmetic choice. Posterior predictive checks with Y on the log
+## scale showed the model failing to reproduce the skewness of either margin,
+## and the misfit biased the estimated dependence rather than merely the
+## margins: it reversed the sign of the fitted trend in the copula parameter
+## under the Gumbel family. See ppcheck.R.
+
 ## Both markers are freely filtered by the glomerulus and catabolised by the
 ## proximal tubule, so serum concentrations rise as filtration falls, and
 ## neither depends on muscle mass. That last point matters here: serum
@@ -91,9 +105,10 @@ dat <- raw %>%
   filter(!is.na(BMXBMI), !is.na(sbp), is.finite(sbp)) %>%
   transmute(
     SEQN,
-    q     = cystatinC,                # gamma margin
-    y     = log(b2m),                 # normal margin
-    b2m   = b2m,
+    q     = 1 / cystatinC,            # gamma margin, reciprocal scale
+    y     = 1 / b2m,                  # normal margin, reciprocal scale
+    b2m       = b2m,
+    cystatinC = cystatinC,
     creat = creatinine,
     age    = RIDAGEYR,
     female = as.numeric(RIAGENDR == 2),
@@ -146,14 +161,14 @@ skew <- function(x) mean((x - mean(x))^3) / sd(x)^3
 
 cat("\n--- marginal summaries ---\n")
 print(round(rbind(
-  `Q: cystatin C (mg/L)` = summary(dat$q),
+  `Q: 1/cystatin C`      = summary(dat$q),
   `B2M (mg/L)`           = summary(dat$b2m),
-  `Y: log B2M`           = summary(dat$y)
+  `Y: 1/B2M`             = summary(dat$y)
 ), 3))
 
-cat("\nskewness  Q = cystatin C:", round(skew(dat$q), 3),
+cat("\nskewness  Q = 1/cystatin C:", round(skew(dat$q), 3),
     " B2M:", round(skew(dat$b2m), 3),
-    " Y = log B2M:", round(skew(dat$y), 3), "\n")
+    " Y = 1/B2M:", round(skew(dat$y), 3), "\n")
 
 ## The normal margin requires a symmetric residual; report the check.
 ry <- residuals(lm(y ~ age + female + bmi + sbp, data = dat))
@@ -170,8 +185,8 @@ gran <- function(v, lab) {
               100 * max(table(v)) / length(v)))
 }
 cat("\n--- granularity ---\n")
-gran(dat$q, "Q: cystatin C")
-gran(dat$y, "Y: log B2M")
+gran(dat$q, "Q: 1/cystatinC")
+gran(dat$y, "Y: 1/B2M")
 if (any(!is.na(dat$creat))) gran(log(dat$creat[!is.na(dat$creat)]), "log creat")
 
 cat("\nPearson  cor(q, y) =", round(cor(dat$q, dat$y), 3),

@@ -26,14 +26,15 @@ residual dependence given `W` scientifically meaningful.
 
 | | |
 |---|---|
-| `Q` | serum cystatin C, mg/L, gamma margin |
-| `Y` | log serum beta-2 microglobulin, mg/L, normal margin |
-| `W` | latent renal impairment |
+| `Q` | 1 / cystatin C, L/mg, gamma margin |
+| `Y` | 1 / beta-2 microglobulin, L/mg, normal margin |
+| `W` | latent glomerular filtration rate |
 | covariates | age, sex, BMI, systolic blood pressure, standardised |
 
-Note the orientation: both markers rise as filtration falls, and both loadings
-are positive, so `W` increases with *impairment*. Its posterior mean correlates
-negatively with CKD-EPI eGFR.
+Note the orientation. Both surrogates are on the **reciprocal (clearance)
+scale**, on which a renally cleared marker is linear in the filtration rate, so
+both loadings are positive and `W` increases with *filtration*. Its posterior
+mean correlates +0.747 with CKD-EPI eGFR and -0.898 with age.
 
 ## Data
 
@@ -54,20 +55,39 @@ truncates the range of `W` but leaves the conditional laws of `Q` and `Y` given
 `W`, and the copula between them, unaffected. Selecting on a function of the two
 surrogates would distort exactly what the model estimates.
 
-### Which marker gets which margin
+### Choice of scale: use the reciprocal, not the log
 
-Decided before fitting, in `eda.R`. Writing both assignments as densities for the
-observed pair, so the totals are on a common scale:
+Decided before the final fits, in `eda.R`. The serum concentration of a renally
+cleared marker is inversely proportional to the filtration rate, so it is the
+*reciprocal* of the concentration that is linear in filtration -- the same
+reasoning behind the clinical use of reciprocal-creatinine slopes to track CKD
+progression. Writing every specification as a density for the observed pair of
+concentrations, so the totals are comparable across scales:
 
-| assignment | total AIC | KS, gamma margin | KS, normal margin |
+| specification | total AIC | KS gamma | KS normal |
 |---|---|---|---|
-| **Q = cystatin C, Y = log B2M** (used) | **609** | 0.055 | 0.054 |
-| Q = B2M, Y = log cystatin C | 947 | 0.074 | 0.038 |
+| Q = cystatin C, Y = log B2M | 609.1 | 0.055 | 0.054 |
+| Q = B2M, Y = log cystatin C | 947.0 | 0.074 | 0.038 |
+| Q = cystatin C, Y = 1/B2M | -145.2 | 0.055 | 0.021 |
+| **Q = 1/cystatin C, Y = 1/B2M** (used) | **-525.6** | **0.029** | **0.021** |
+| Q = 1/B2M, Y = 1/cystatin C | -30.4 | 0.035 | 0.030 |
 
-The chosen assignment wins on total AIC and balances the two margins instead of
-making one much worse. The reason: the gamma margin has a shape parameter to
-absorb positive skew and the normal margin has none, so the more skewed marker
-(B2M) gains most from the log scale.
+The Box-Cox power that symmetrises the covariate residual is -0.80 for B2M and
+-0.43 for cystatin C, either side of the -1 of the reciprocal; we use the
+reciprocal because it is interpretable and estimates nothing from the data.
+
+**This was not cosmetic, and the reason is worth knowing.** The normal margin is
+the rigid half of the model: `Y | W` is normal and `W` is normal, so the model
+implies a *symmetric* marginal `Y` and cannot do otherwise. With `Y` on the log
+scale (residual skewness 0.85) `ppcheck.R` showed the model failing to reproduce
+the skewness of either margin, the upper quantiles of both, or the tail
+asymmetry -- and the misfit did **not** stay in the margins. Refitting on a
+symmetrised scale moved the estimated dependence trend under every family and
+*reversed its sign* under Gumbel. It also fixed a mixing problem: on the log
+scale the Gaussian copula would not converge in 200k iterations (PSRF 1.085,
+min ESS 55) and needed 600k, while on the reciprocal scale it converges as
+readily as the rest. Bad mixing was a symptom of misspecification, not a
+property of the family.
 
 ### Why not creatinine: measurement granularity
 
@@ -76,8 +96,8 @@ In these cycles it is reported to the nearest 0.1 mg/dL:
 
 | marker | distinct values | largest tied group | spacing / sd |
 |---|---|---|---|
-| cystatin C | 641 | 0.70% | 0.005 |
-| log beta-2 microglobulin | 384 | 1.25% | 0.015 |
+| 1 / cystatin C | 641 | 0.70% | 0.008 |
+| 1 / beta-2 microglobulin | 384 | 1.25% | 0.011 |
 | log creatinine (**not used**) | 16 | **17.6%** | **0.35** |
 
 A continuous margin cannot represent atoms holding a sixth of the sample, and
@@ -95,13 +115,19 @@ the reported quantity. This is cleaner here than it would be with creatinine,
 whose dependence on muscle mass makes age and sex determinants of the marker as
 well as of kidney function.
 
-### Tail dependence
+### Tail dependence, and a caution about reading it
 
-Nonparametric estimates of `P(U2 > t | U1 > t)` and its lower counterpart are
+Nonparametric estimates of `P(U2 <= t | U1 <= t)` and its upper counterpart are
 0.65 vs 0.39 at t = 0.05, and 0.54 vs 0.28 at t = 0.02: strong dependence,
-markedly asymmetric, concentrated where both markers are high and filtration is
-poorest. The Gaussian and Frank copulas cannot produce this and Clayton produces
-it in the wrong tail, which is why Gumbel, Joe and survival Clayton are included.
+markedly asymmetric, concentrated where both markers are *small*, which on the
+clearance scale is where filtration is poorest. All seven families are fitted so
+the comparison is not rigged toward that asymmetry.
+
+**The caution:** Clayton has its tail dependence in exactly that tail, and still
+finishes last among the copulas (620 WAIC behind Frank). The tail behaviour of
+the *observed* pair is a poor guide to the family of the *conditional* copula,
+because most of the marginal asymmetry is generated by `W` itself. Use the
+diagnostic to choose which families to include, not to predict the winner.
 
 ## Scripts
 
@@ -111,12 +137,13 @@ Run from the repository root, in this order.
 |---|---|
 | `download_data.R` | Fetch the public NHANES files (~40 MB) into `application-nhanes/data/` |
 | `build_data.R` | Merge, apply exclusions, and write `nhanes_kidney.rds` |
-| `eda.R` | Histograms, scatterplots on the original and pseudo-observation scales, Kendall's tau by age quintile |
+| `eda.R` | Granularity, choice of scale and margin, histograms, scatterplots, Kendall's tau by age quintile |
 | `fit_nhanes.R` | Fit one copula family and one chain |
 | `run_batch.sh` | Launch several chains in parallel and wait for them |
 | `results.R` | Convergence diagnostics, both sets of criteria, posterior summaries, figures, LaTeX tables |
 | `marginal_criteria.R` | The marginalised criteria on their own, with a quadrature accuracy check |
 | `diagnostics.R` | PSRF, MPSRF and effective sample size per family |
+| `ppcheck.R` | Posterior predictive check of the margins, association and tail behaviour |
 
 `nhanes_kidney.rds` is committed, so the analysis can be reproduced without the
 download step. The download-then-build path has been checked from a clean state
@@ -139,6 +166,17 @@ quantity induces a selection effect that attenuates the within-stratum
 association and produced a spurious negative trend. Stratifying on eGFR would be
 circular for the same reason, since eGFR is a deterministic function of
 creatinine.
+
+**Set the quadrature window wide enough.** The marginal criteria integrate `W`
+out by Simpson quadrature on a window around the integrand's mode. The error is
+almost entirely *truncation*, not discretisation, and it is strongly
+family-dependent: at a half-width of 1.6 the total log density was off by 2 for
+the independence copula but 261 for Frank and 524 for Gaussian, which is more
+than enough to reorder the families outright. Widening to 4.0 costs nothing --
+the node count is irrelevant, 81 suffices -- and drops the worst error below
+0.02. `marginal_criteria.R` now checks every family, not just one; checking a
+single family is what hid the problem, since independence is the most accurate
+case.
 
 **Read both sets of criteria.** `results.R` reports the criteria as defined in
 the paper alongside marginalised versions with `W` integrated out. In this model
