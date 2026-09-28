@@ -33,10 +33,10 @@ enough that a continuous margin cannot represent it. See
 |---|---|
 | `R/` | Model code: copula densities, the reference R sampler, and the Rcpp sampler |
 | `application-nhanes/` | The gamma-Gaussian application: data preparation, EDA, fitting, diagnostics, model comparison |
-| `simulation/` | Parameter-recovery study and the model-comparison demonstration |
+| `simulation/` | Parameter-recovery study, the continuous-continuous copula-selection study of Section 5, checks of the identified parametrisation, and the model-comparison demonstration |
 | `benchmarks/` | Profiling, correctness checks of the Rcpp code against the R reference, and mixing benchmarks |
 | `exploratory/` | The screening that led to the choice of surrogate pair and margins |
-| `mixed-response/` | Code for the Poisson-normal case of the paper |
+| `mixed-response/` | The Poisson-normal case: sampler for five copula families, the simulation studies of Section 5, and the original programs |
 
 **All scripts are written to be run from the repository root**, so that paths
 such as `R/lvc_fast.R` and `output/fits/` resolve correctly:
@@ -59,8 +59,10 @@ install.packages(c("Rcpp", "coda", "ggplot2", "haven", "dplyr", "statmod"))
 
 `Rcpp` requires a working C++ compiler. On macOS this means the Xcode command
 line tools (`xcode-select --install`); on Linux, `r-base-dev` or equivalent.
-`VineCopula` is optional and used only to validate the copula densities in
-`benchmarks/test_kernel.R`.
+The simulation studies of Section 5 also use `stableGR` for the Gelman-Rubin
+diagnostics and `VineCopula`, which validates the copula functions in
+`benchmarks/test_kernel.R` and `mixed-response/test_mixed.R` and simulates the
+continuous-continuous data sets.
 
 ## Reproducing the NHANES application
 
@@ -205,13 +207,16 @@ not arrest it because that penalty is dominated by the posterior variability of
 each. The criteria can then prefer a model with weak dependence and tightly
 concentrated margins over one that fits the dependence well.
 
-This does not affect the mixed-response case, where the discrete margin
+The mixed-response case is affected in a milder form: the discrete margin
 contributes a probability bounded by one and the count margin has no free
-dispersion parameter, nor the paper's continuous-continuous simulations, in which
-the margins are held fixed. For the gamma-Gaussian case, `results.R` reports both
-the criteria as defined in the paper and marginalised versions in which `W` is
-integrated out by quadrature; `simulation/criteria_demo.R` demonstrates the point
-on data simulated from a known model.
+dispersion parameter, but the normal margin keeps its variance and `W_i` remains
+a per-observation quantity through which every model can absorb part of the
+association. The paper therefore reports criteria with `W` integrated out by
+quadrature throughout, and shows the conditional criteria alongside them.
+`application-nhanes/results.R` computes both for the kidney data,
+`mixed-response/criteria.R` and `simulation/contcont_selection.R` for the
+simulation studies of Section 5, and `simulation/criteria_demo.R` demonstrates
+the point on data simulated from a known model.
 
 ## Runtime
 
