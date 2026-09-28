@@ -33,10 +33,10 @@ stopifnot(length(fams) > 0)
 ## ---------------------------------------------------------------- criteria --
 simpson_w <- function(k) c(1, rep(c(4, 2), length.out = k - 2), 1) / 3
 
-log_marg <- function(p, beta, family, half = 4.0, kf = 81, kc = 49) {
+log_marg <- function(p, beta, family, s2 = 1, half = 4.0, kf = 81, kc = 49) {
   m <- as.numeric(X %*% beta)
   li <- function(t) lvc_logdens(q, y, m + t, p, family, 0.1) -
-                    0.5 * t^2 - 0.9189385332
+                    0.5 * t^2 / s2 - 0.5 * log(2 * pi * s2)
   best <- rep(-Inf, n); what <- numeric(n)
   for (t in seq(-6, 6, length.out = kc)) {
     v <- li(t); hit <- v > best; best[hit] <- v[hit]; what[hit] <- t
@@ -70,7 +70,8 @@ pretty <- c(muq = "$\\mu_\\q$", lamq = "$\\lambda_\\q$", alpha = "$\\alpha$",
             muy = "$\\mu_\\y$", lamy = "$\\lambda_\\y$", sigma = "$\\sigma$",
             xi0 = "$\\xi_0$", xi1 = "$\\xi_1$",
             beta1 = "$\\beta_\\text{age}$", beta2 = "$\\beta_\\text{female}$",
-            beta3 = "$\\beta_\\text{BMI}$", beta4 = "$\\beta_\\text{SBP}$")
+            beta3 = "$\\beta_\\text{BMI}$", beta4 = "$\\beta_\\text{SBP}$",
+            s2W = "$\\sigma_W^2$")
 
 crit <- NULL; summ <- list(); diagn <- NULL
 for (f in fams) {
@@ -96,7 +97,8 @@ for (f in fams) {
     didx <- fit$burn + seq_len(nd) * thin
     for (j in seq_len(nd)) {
       p <- fit$PAR[1:8, didx[j]]; names(p) <- rownames(fit$PAR)[1:8]
-      lj <- log_marg(p, fit$PAR[9:12, didx[j]], f)
+      s2 <- if ("s2W" %in% rownames(fit$PAR)) fit$PAR["s2W", didx[j]] else 1
+      lj <- log_marg(p, fit$PAR[9:12, didx[j]], f, s2 = s2)
       lc <- lvc_logdens(q, y, fit$Wsamp[, j], p, f, 0.1)
       cnt <- cnt + 1
       mp <- mp + (exp(lj) - mp) / cnt; mip <- mip + (exp(-lj) - mip) / cnt
@@ -136,9 +138,10 @@ cat("\nselected by marginal WAIC:", best, "\n")
 cat("selected by conditional WAIC:", crit$family[which.min(crit$WAIC_c)], "\n\n")
 print(round(summ[[best]], 4))
 
-## Both lambda's are positive and both markers rise as filtration falls, so W is
-## oriented as renal impairment; P(xi1 > 0) measures the evidence that the
-## dependence between the two markers strengthens with impairment.
+## Both lambda's are positive on the clearance scale, so W is oriented as
+## filtration (it correlates positively with eGFR); P(xi1 > 0) measures the
+## evidence that the dependence between the two markers strengthens with
+## filtration, and P(xi1 < 0) that it strengthens as filtration falls.
 for (f in setdiff(fams, "Independence")) {
   S <- do.call(cbind, load_fam(f)$post)
   cat(sprintf("P(xi1 > 0 | data), %-9s = %.4f\n", f, mean(S["xi1", ] > 0)))
@@ -187,7 +190,7 @@ band <- function(M, lab, file) {
   p <- ggplot(d, aes(w, med)) +
     geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey75", alpha = .6) +
     geom_line(linewidth = .7) +
-    labs(x = expression("latent renal impairment "*W), y = lab) + base
+    labs(x = expression("latent filtration "*W), y = lab) + base
   ggsave(file, p, width = 5.2, height = 3.8, dpi = 300)
 }
 band(TH, expression("copula parameter "*theta*"("*W*")"), "figs/NHANES_theta_of_W.png")

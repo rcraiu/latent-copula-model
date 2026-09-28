@@ -24,14 +24,15 @@ export OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 M=${M:-600000}
 ENGINE=${ENGINE:-cpp}
 PROPOSAL=${PROPOSAL:-block}
+BETA=${BETA:-norm1}
 
 mkdir -p output/logs output/fits
 
-echo "M=$M engine=$ENGINE proposal=$PROPOSAL"
+echo "M=$M engine=$ENGINE proposal=$PROPOSAL beta=$BETA"
 for spec in "$@"; do
   fam=${spec%%:*}
   ch=${spec##*:}
-  Rscript application-nhanes/fit_nhanes.R "$fam" "$ch" "$M" "$ENGINE" "$PROPOSAL" \
+  Rscript application-nhanes/fit_nhanes.R "$fam" "$ch" "$M" "$ENGINE" "$PROPOSAL" "$BETA" \
       > "output/logs/${fam}_${ch}.log" 2>&1 &
   echo "launched $fam chain $ch as pid $!"
 done

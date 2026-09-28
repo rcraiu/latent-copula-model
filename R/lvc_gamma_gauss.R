@@ -4,7 +4,7 @@
 ##   Q_i | W_i ~ Gamma(alpha, alpha * exp(-(mu_q + lam_q W_i)))   [mean e^{mu_q+lam_q W_i}]
 ##   Y_i | W_i ~ N(mu_y + lam_y W_i, sigma^2)
 ##   (Q_i,Y_i) | W_i ~ C(F_q, F_y | theta(W_i, xi))
-##   W_i ~ N(beta' x_i, 1)
+##   W_i ~ N(beta' x_i, s2W),  ||beta|| = 1
 ##
 ## No data augmentation is required: the joint density is available in closed
 ## form, so D_mis = W only and the Z step of the mixed-response sampler drops out.
@@ -80,16 +80,33 @@ run_lvc <- function(q, y, X, family = "Gaussian", M = 20000, burn = NULL,
                     gscale = 0.1, seed = 1729, verbose = 2000,
                     prior = list(s2_mu = 100, s2_lam = 100, s2_xi = 100,
                                  a_alpha = 0.01, b_alpha = 0.01,
-                                 a_sig = 0.01, b_sig = 0.01, s2_beta = 1000),
-                    track_criteria = TRUE, thin_W = 0) {
+                                 a_sig = 0.01, b_sig = 0.01, s2_beta = 1000,
+                                 a_w = 0.01, b_w = 0.01),
+                    track_criteria = TRUE, thin_W = 0, beta_norm1 = TRUE,
+                    wvar_free = TRUE, px_da = TRUE) {
+  ## wvar_free frees the conditional variance of W given x, replacing the
+  ## normalisation var(W | x) = 1 by ||beta|| = 1; exactly one of the two is
+  ## needed, so the sphere constraint is required when the variance is free.
+  if (wvar_free && !beta_norm1)
+    stop("wvar_free = TRUE requires beta_norm1 = TRUE")
+  ## px_da is the parameter-expanded Gibbs step of Xu, Craiu, Sun & Paterson
+  ## (2016, JCGS), eq. (3.2). Two reductions are available:
+  ##   * identified by var(W|x) = 1 (beta free): draw unrestricted beta* and
+  ##     residual scale psi^2, then reduce by psi (the paper's maps).
+  ##   * identified by ||beta|| = 1 (s2W free): the same expanded draws, then
+  ##     a Metropolis group move on the scale orbit of the identified target.
+  if (px_da && beta_norm1 && !wvar_free)
+    stop("px_da with beta_norm1 = TRUE requires wvar_free = TRUE")
+  if (is.null(prior$a_w)) prior$a_w <- 0.01
+  if (is.null(prior$b_w)) prior$b_w <- 0.01
   set.seed(seed)
   n <- length(q); p_dim <- ncol(X)
   if (is.null(burn)) burn <- floor(M / 2)
   has_xi <- family != "Independence"
 
   pnames <- c("muq", "lamq", "lalpha", "muy", "lamy", "lsigma", "xi0", "xi1")
-  PAR  <- matrix(NA_real_, nrow = length(pnames) + p_dim, ncol = M)
-  rownames(PAR) <- c(pnames, paste0("beta", 1:p_dim))
+  PAR  <- matrix(NA_real_, nrow = length(pnames) + p_dim + wvar_free, ncol = M)
+  rownames(PAR) <- c(pnames, paste0("beta", 1:p_dim), if (wvar_free) "s2W")
 
   ## ---- log posterior contributions ------------------------------------
   logprior <- function(p) {
@@ -153,6 +170,11 @@ run_lvc <- function(q, y, X, family = "Gaussian", M = 20000, burn = NULL,
   betapost_prec <- crossprod(X) + diag(1 / prior$s2_beta, p_dim)
   betapost_cov  <- solve(betapost_prec)
   betapost_chol <- chol(betapost_cov)
+  ## constrained beta update (||beta|| = 1): projected random-walk Metropolis
+  ## on the unit sphere, uniform prior on the sphere, adaptive step size
+  sbeta <- 0.1; acc_beta <- 0
+  s2W <- 1                                  # conditional variance of W given x
+  s_px <- 0.3; acc_px <- 0                  # group-move step on log c
 
   ## ---- criteria states -------------------------------------------------
   if (track_criteria) {
@@ -205,17 +227,63 @@ run_lvc <- function(q, y, X, family = "Gaussian", M = 20000, burn = NULL,
         (tcrossprod(p[b] - mu_old) - ad[[bi]]$Sig)
     }
 
-    ## ---- Step 4: beta, exact conjugate draw ---------------------------
-    bm   <- betapost_cov %*% crossprod(X, W)
-    beta <- as.numeric(bm + t(betapost_chol) %*% rnorm(p_dim))
+    ## ---- Step 4: beta, and (if freed) the residual scale of W ----------
+    if (px_da && !beta_norm1) {
+      ## PX-HC, Xu et al. (2016, eq. 3.2). Working model W ~ N(X beta*, psi^2)
+      ## with beta* unrestricted. Reduce by psi:
+      ##   beta = beta*/psi,  W = W*/psi,  (lamq, lamy, xi1) = psi * (.*).
+      ## After the reduction, var(W | x) = 1 and the scale ridge is a single
+      ## Gibbs move in the working parameter.
+      prec <- crossprod(X) / s2W + diag(1 / prior$s2_beta, p_dim)
+      covb <- solve(prec)
+      mb   <- as.numeric(covb %*% (crossprod(X, W) / s2W))
+      bstar <- mb + as.numeric(t(chol(covb)) %*% rnorm(p_dim))
+      SS   <- sum((W - as.numeric(X %*% bstar))^2)
+      psi2 <- 1 / rgamma(1, prior$a_w + n / 2, rate = prior$b_w + SS / 2)
+      psi  <- sqrt(psi2)
+      beta <- bstar / psi
+      W    <- W / psi
+      p["lamq"] <- p[["lamq"]] * psi
+      p["lamy"] <- p[["lamy"]] * psi
+      if (has_xi) p["xi1"] <- p[["xi1"]] * psi
+      s2W  <- 1
+      muW  <- muW / psi
+      varW <- varW / psi^2
+      Xb   <- as.numeric(X %*% beta)
+      cur_lpr <- logprior(p)
+      cq <- comp_q(q, W, p); cy <- comp_y(y, W, p)
+      th <- comp_th(W, p, family, gscale)
+      cur_ll <- sum(logdens_from(cq, cy, th, family))
+    } else if (beta_norm1) {
+      ## Metropolis on the unit sphere: propose beta + s z projected back to
+      ## the sphere. The proposal density depends only on the angle between
+      ## the current and proposed points, hence is symmetric, and the target
+      ## on the sphere is exp(-||W - X beta||^2 / (2 s2W)) (flat spherical prior).
+      bp <- beta + sbeta * rnorm(p_dim)
+      bp <- bp / sqrt(sum(bp^2))
+      lr_b <- 0.5 * (sum((W - as.numeric(X %*% beta))^2) -
+                     sum((W - as.numeric(X %*% bp))^2)) / s2W
+      a_b <- if (is.finite(lr_b)) min(1, exp(lr_b)) else 0
+      if (runif(1) < a_b) { beta <- bp; acc_beta <- acc_beta + 1 }
+      sbeta <- exp(log(sbeta) + gam_t(t) * (a_b - 0.234))
+      Xb <- as.numeric(X %*% beta)
+      if (wvar_free) {
+        SS  <- sum((W - Xb)^2)
+        s2W <- 1 / rgamma(1, prior$a_w + n / 2, rate = prior$b_w + SS / 2)
+      }
+    } else {
+      ## exact conjugate draw, unit residual variance
+      bm   <- betapost_cov %*% crossprod(X, W)
+      beta <- as.numeric(bm + t(betapost_chol) %*% rnorm(p_dim))
+      Xb   <- as.numeric(X %*% beta)
+    }
 
     ## ---- Step 5: W, componentwise adaptive random walk ----------------
-    Xb <- as.numeric(X %*% beta)
-    lpW_cur <- logdens_from(cq, cy, th, family) + dnorm(W, Xb, 1, log = TRUE)
+    lpW_cur <- logdens_from(cq, cy, th, family) + dnorm(W, Xb, sqrt(s2W), log = TRUE)
     Wp  <- W + sqrt(lamW * pmax(varW, 1e-8)) * rnorm(n)
     pq  <- comp_q(q, Wp, p); py <- comp_y(y, Wp, p)
     pth <- comp_th(Wp, p, family, gscale)
-    lpW_prop <- logdens_from(pq, py, pth, family) + dnorm(Wp, Xb, 1, log = TRUE)
+    lpW_prop <- logdens_from(pq, py, pth, family) + dnorm(Wp, Xb, sqrt(s2W), log = TRUE)
     lr  <- lpW_prop - lpW_cur
     aW  <- exp(pmin(lr, 0))
     aW[!is.finite(aW)] <- 0
@@ -232,7 +300,38 @@ run_lvc <- function(q, y, X, family = "Gaussian", M = 20000, burn = NULL,
     varW <- varW + gam_t(t) * ((W - muW_old)^2 - varW)
     cur_ll <- sum(logdens_from(cq, cy, th, family))
 
-    PAR[, t] <- c(p, beta)
+    ## ---- Step 6: PX group move on the identified (||beta||=1, s2W free) orbit
+    ## (W, lamq, lamy, xi1, s2W) -> (c W, lamq/c, lamy/c, xi1/c, c^2 s2W).
+    ## The complete-data likelihood is invariant; the Metropolis ratio is the
+    ## W-prior, the parameter priors, the IG prior on s2W, and the Jacobian
+    ## c^(n - k + 2), with a symmetric proposal on log c.
+    if (px_da && beta_norm1) {
+      lc <- s_px * rnorm(1); cc <- exp(lc)
+      pn <- p
+      pn["lamq"] <- p[["lamq"]] / cc
+      pn["lamy"] <- p[["lamy"]] / cc
+      if (has_xi) pn["xi1"] <- p[["xi1"]] / cc
+      s2n <- cc^2 * s2W
+      k <- 2 + has_xi
+      lr_px <- sum(dnorm(cc * W, Xb, sqrt(s2n), log = TRUE) -
+                   dnorm(W,      Xb, sqrt(s2W), log = TRUE)) +
+        (logprior(pn) - logprior(p)) +
+        (-(prior$a_w + 1) * 2 * lc - prior$b_w * (1 / s2n - 1 / s2W)) +
+        (n - k + 2) * lc
+      a_px <- if (is.finite(lr_px)) min(1, exp(lr_px)) else 0
+      if (runif(1) < a_px) {
+        p <- pn; W <- cc * W; s2W <- s2n
+        muW <- cc * muW; varW <- cc^2 * varW
+        cur_lpr <- logprior(p)
+        cq <- comp_q(q, W, p); cy <- comp_y(y, W, p)
+        th <- comp_th(W, p, family, gscale)
+        cur_ll <- sum(logdens_from(cq, cy, th, family))
+        acc_px <- acc_px + 1
+      }
+      s_px <- exp(log(s_px) + gam_t(t) * (a_px - TARGET_ACC))
+    }
+
+    PAR[, t] <- c(p, beta, if (wvar_free) s2W)
 
     ## ---- criteria, online after burn-in -------------------------------
     if (track_criteria && t > burn) {
@@ -260,7 +359,9 @@ run_lvc <- function(q, y, X, family = "Gaussian", M = 20000, burn = NULL,
   out <- list(PAR = PAR, family = family, M = M, burn = burn, W = W,
               Wmean = Wsum / max(Wcnt, 1), Wsamp = Wsamp,
               acc = list(blocks = lapply(ad, function(a) a$acc / M),
-                         W = mean(accW) / M))
+                         W = mean(accW) / M,
+                         beta = if (beta_norm1) acc_beta / M else NA,
+                         px = if (px_da && beta_norm1) acc_px / M else NA))
   if (track_criteria) {
     out$criteria <- c(
       WAIC      = waic_from(st$waic),

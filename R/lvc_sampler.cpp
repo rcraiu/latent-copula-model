@@ -47,6 +47,38 @@ static inline double clamp01(double u) {
   return u;
 }
 
+// Cholesky A = L L^T for a small dense pd x pd matrix (row-major). A is
+// overwritten with L. Returns false if A is not positive definite.
+static bool chol_decomp(std::vector<double>& A, int d) {
+  for (int i = 0; i < d; ++i) {
+    for (int j = 0; j <= i; ++j) {
+      double s = A[i * d + j];
+      for (int k = 0; k < j; ++k) s -= A[i * d + k] * A[j * d + k];
+      if (i == j) {
+        if (s <= 1e-16) return false;
+        A[i * d + j] = std::sqrt(s);
+      } else {
+        A[i * d + j] = s / A[j * d + j];
+      }
+    }
+  }
+  return true;
+}
+
+// Solve A x = b given the Cholesky factor L of A stored in L. b is overwritten.
+static void chol_solve(const std::vector<double>& L, std::vector<double>& b, int d) {
+  for (int i = 0; i < d; ++i) {
+    double s = b[i];
+    for (int k = 0; k < i; ++k) s -= L[i * d + k] * b[k];
+    b[i] = s / L[i * d + i];
+  }
+  for (int i = d - 1; i >= 0; --i) {
+    double s = b[i];
+    for (int k = i + 1; k < d; ++k) s -= L[k * d + i] * b[k];
+    b[i] = s / L[i * d + i];
+  }
+}
+
 static inline double theta_of(double w, double xi0, double xi1,
                               int family, double gscale) {
   const double lin = gscale * (xi0 + xi1 * w);
@@ -220,13 +252,25 @@ static double logprior(const double* p, bool has_xi, double s2_mu, double s2_lam
 //' @param blockwise if true the three marginal/copula parameters of a block are
 //'   proposed jointly from the adapted covariance (one gamma evaluation per
 //'   block per iteration) instead of one component at a time.
+//' @param beta_norm1 if true, beta is restricted to the unit sphere (flat
+//'   spherical prior) and updated by a projected random-walk Metropolis step
+//'   instead of the conjugate draw. This removes the scale ridge trading
+//'   ||beta|| against (lam_q, lam_y, xi_1).
+//' @param wvar_free if true, the residual variance of W given x is a free
+//'   parameter (identified by ||beta|| = 1) and is drawn from its inverse-gamma
+//'   complete-data conditional.
+//' @param px_da if true, use the PX-HC step of Xu, Craiu, Sun & Paterson
+//'   (2016, JCGS, eq. 3.2): draw unrestricted beta* and residual scale psi^2
+//'   conjugately, then reduce to ||beta|| = 1.
 // [[Rcpp::export]]
 List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
                  int family, int M, int burn, double gscale,
                  NumericVector p_init, NumericVector beta_init,
                  NumericMatrix betapost_cov, NumericMatrix betapost_cholT,
                  List prior, int thin_W, bool track_criteria, int verbose,
-                 bool blockwise = false, bool cross_block = false) {
+                 bool blockwise = false, bool cross_block = false,
+                 bool beta_norm1 = false, bool wvar_free = false,
+                 bool px_da = false) {
   const int n = q.size(), pd = X.ncol();
   const bool has_xi = (family != INDEP);
   const double TARGET = 0.44;
@@ -241,6 +285,14 @@ List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
                s2_xi = prior["s2_xi"], a_alpha = prior["a_alpha"],
                b_alpha = prior["b_alpha"], a_sig = prior["a_sig"],
                b_sig = prior["b_sig"];
+  const double s2_beta = prior.containsElementNamed("s2_beta") ?
+    as<double>(prior["s2_beta"]) : 1000.0;
+  const double a_w = prior.containsElementNamed("a_w") ?
+    as<double>(prior["a_w"]) : 0.01;
+  const double b_w = prior.containsElementNamed("b_w") ?
+    as<double>(prior["b_w"]) : 0.01;
+  if (px_da && beta_norm1) wvar_free = true;
+  const bool store_s2 = wvar_free;
 
   std::vector<double> p(p_init.begin(), p_init.end());
   std::vector<double> beta(beta_init.begin(), beta_init.end());
@@ -294,8 +346,12 @@ List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
     }
   }
   std::vector<double> lamW(n, 1.0), muW(W), varW(n, 1.0), accW(n, 0.0);
+  double sbeta = 0.1, acc_beta = 0.0;   // sphere step for beta_norm1
+  const double TARGET_BETA = 0.234;
+  double s2W = 1.0;                    // residual variance of W given x
+  double s_px = 0.3, acc_px = 0.0;     // group move on log c
 
-  NumericMatrix PAR(8 + pd, M);
+  NumericMatrix PAR(8 + pd + (store_s2 ? 1 : 0), M);
   std::vector<double> Wsum(n, 0.0);
   int Wcnt = 0;
   const int nWs = (thin_W > 0) ? (M - burn) / thin_W : 0;
@@ -402,21 +458,126 @@ List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
           Sig[b][r * L + c2] += gam * (d[r] * d[c2] - Sig[b][r * L + c2]);
     }
 
-    // ---- Step 4: beta, exact conjugate draw ------------------------------
-    std::vector<double> XtW(pd, 0.0);
-    for (int k = 0; k < pd; ++k) {
-      double s = 0.0;
-      for (int i = 0; i < n; ++i) s += X(i, k) * W[i];
-      XtW[k] = s;
-    }
-    std::vector<double> zb(pd);
-    for (int k = 0; k < pd; ++k) zb[k] = norm_rand();
-    for (int k = 0; k < pd; ++k) {
-      double m = 0.0;
-      for (int l = 0; l < pd; ++l) m += betapost_cov(k, l) * XtW[l];
-      double e = 0.0;
-      for (int l = 0; l < pd; ++l) e += betapost_cholT(k, l) * zb[l];
-      beta[k] = m + e;
+    // ---- Step 4: beta, and (if freed) the residual scale of W ------------
+    if (px_da && !beta_norm1) {
+      // PX-HC (Xu et al. 2016, eq. 3.2): W ~ N(X beta*, psi^2) with beta*
+      // unrestricted. Reduce by psi so that var(W | x) = 1.
+      std::vector<double> XtW(pd, 0.0);
+      for (int k = 0; k < pd; ++k) {
+        double s = 0.0;
+        for (int i = 0; i < n; ++i) s += X(i, k) * W[i];
+        XtW[k] = s;
+      }
+      std::vector<double> Prec(pd * pd, 0.0);
+      const double invs2 = 1.0 / s2W, invsb = 1.0 / s2_beta;
+      for (int r = 0; r < pd; ++r) {
+        for (int c2 = 0; c2 < pd; ++c2) {
+          double s = 0.0;
+          for (int i = 0; i < n; ++i) s += X(i, r) * X(i, c2);
+          Prec[r * pd + c2] = s * invs2;
+        }
+        Prec[r * pd + r] += invsb;
+      }
+      std::vector<double> rhs(pd);
+      for (int k = 0; k < pd; ++k) rhs[k] = XtW[k] * invs2;
+      std::vector<double> L = Prec;
+      if (chol_decomp(L, pd)) {
+        chol_solve(L, rhs, pd);
+        std::vector<double> z(pd);
+        for (int k = 0; k < pd; ++k) z[k] = norm_rand();
+        for (int i = pd - 1; i >= 0; --i) {
+          double s = z[i];
+          for (int k = i + 1; k < pd; ++k) s -= L[k * pd + i] * z[k];
+          z[i] = s / L[i * pd + i];
+        }
+        std::vector<double> bstar(pd);
+        for (int k = 0; k < pd; ++k) bstar[k] = rhs[k] + z[k];
+        double SS = 0.0;
+        for (int i = 0; i < n; ++i) {
+          double xb = 0.0;
+          for (int k = 0; k < pd; ++k) xb += X(i, k) * bstar[k];
+          const double d = W[i] - xb;
+          SS += d * d;
+        }
+        const double psi2 = 1.0 / R::rgamma(a_w + 0.5 * n, 1.0 / (b_w + 0.5 * SS));
+        const double psi = std::sqrt(psi2);
+        if (psi > 1e-12) {
+          for (int k = 0; k < pd; ++k) beta[k] = bstar[k] / psi;
+          for (int i = 0; i < n; ++i) {
+            W[i]    /= psi;
+            muW[i]  /= psi;
+            varW[i] /= psi * psi;
+          }
+          p[1] *= psi;
+          p[4] *= psi;
+          if (has_xi) p[7] *= psi;
+          s2W = 1.0;
+          mod.fill_q(C.lf1, C.u1, C.lu1, C.z1, W.data(), p[0], p[1], std::exp(p[2]));
+          mod.fill_y(C.lf2, C.u2, C.lu2, C.z2, W.data(), p[3], p[4], std::exp(p[5]));
+          mod.fill_th(C.th, W.data(), p[6], p[7]);
+          cur_ll  = mod.loglik(C);
+          cur_lpr = logprior(p.data(), has_xi, s2_mu, s2_lam, s2_xi,
+                             a_alpha, b_alpha, a_sig, b_sig);
+        }
+      }
+    } else if (beta_norm1) {
+      // Projected random-walk Metropolis on the unit sphere: propose
+      // beta + s z and normalise. The proposal density depends only on the
+      // angle between the current and proposed points, hence is symmetric,
+      // and the target on the sphere is exp(-||W - X beta||^2 / (2 s2W))
+      // under a flat spherical prior.
+      std::vector<double> bp(pd);
+      double nb = 0.0;
+      for (int k = 0; k < pd; ++k) {
+        bp[k] = beta[k] + sbeta * norm_rand();
+        nb += bp[k] * bp[k];
+      }
+      nb = std::sqrt(nb);
+      double ss_cur = 0.0, ss_prop = 0.0;
+      for (int i = 0; i < n; ++i) {
+        double xc = 0.0, xp = 0.0;
+        for (int k = 0; k < pd; ++k) {
+          xc += X(i, k) * beta[k];
+          xp += X(i, k) * bp[k] / nb;
+        }
+        const double dc = W[i] - xc, dp = W[i] - xp;
+        ss_cur  += dc * dc;
+        ss_prop += dp * dp;
+      }
+      const double lr = 0.5 * (ss_cur - ss_prop) / s2W;
+      double a = R_finite(lr) ? (lr >= 0.0 ? 1.0 : std::exp(lr)) : 0.0;
+      if (unif_rand() < a) {
+        for (int k = 0; k < pd; ++k) beta[k] = bp[k] / nb;
+        acc_beta += 1.0;
+      }
+      sbeta = std::exp(std::log(sbeta) + gam * (a - TARGET_BETA));
+      if (wvar_free) {
+        double SS = 0.0;
+        for (int i = 0; i < n; ++i) {
+          double xb = 0.0;
+          for (int k = 0; k < pd; ++k) xb += X(i, k) * beta[k];
+          const double d = W[i] - xb;
+          SS += d * d;
+        }
+        s2W = 1.0 / R::rgamma(a_w + 0.5 * n, 1.0 / (b_w + 0.5 * SS));
+      }
+    } else {
+      // exact conjugate draw, unit residual variance
+      std::vector<double> XtW(pd, 0.0);
+      for (int k = 0; k < pd; ++k) {
+        double s = 0.0;
+        for (int i = 0; i < n; ++i) s += X(i, k) * W[i];
+        XtW[k] = s;
+      }
+      std::vector<double> zb(pd);
+      for (int k = 0; k < pd; ++k) zb[k] = norm_rand();
+      for (int k = 0; k < pd; ++k) {
+        double m = 0.0;
+        for (int l = 0; l < pd; ++l) m += betapost_cov(k, l) * XtW[l];
+        double e = 0.0;
+        for (int l = 0; l < pd; ++l) e += betapost_cholT(k, l) * zb[l];
+        beta[k] = m + e;
+      }
     }
 
     // ---- Step 5: latent variables ----------------------------------------
@@ -426,9 +587,10 @@ List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
       for (int k = 0; k < pd; ++k) s += X(i, k) * beta[k];
       Xb[i] = s;
     }
+    const double invs2W = 1.0 / s2W, lns2W = 0.5 * std::log(s2W);
     for (int i = 0; i < n; ++i) {
       const double d = W[i] - Xb[i];
-      lpW[i] = mod.ld(C, i) - 0.5 * d * d - LOG_SQRT_2PI;
+      lpW[i] = mod.ld(C, i) - 0.5 * d * d * invs2W - LOG_SQRT_2PI - lns2W;
     }
     for (int i = 0; i < n; ++i) {
       const double v = varW[i] > 1e-8 ? varW[i] : 1e-8;
@@ -439,7 +601,7 @@ List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
     mod.fill_th(S.th, propW.data(), p[6], p[7]);
     for (int i = 0; i < n; ++i) {
       const double d = propW[i] - Xb[i];
-      lppW[i] = mod.ld(S, i) - 0.5 * d * d - LOG_SQRT_2PI;
+      lppW[i] = mod.ld(S, i) - 0.5 * d * d * invs2W - LOG_SQRT_2PI - lns2W;
       const double lr = lppW[i] - lpW[i];
       double a = R_finite(lr) ? (lr >= 0.0 ? 1.0 : std::exp(lr)) : 0.0;
       if (!R_finite(a)) a = 0.0;
@@ -464,8 +626,51 @@ List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
     }
     cur_ll = mod.loglik(C);
 
+    // ---- Step 6: PX group move on the (||beta||=1, s2W free) orbit --------
+    if (px_da && beta_norm1) {
+      const double lc = s_px * norm_rand();
+      const double cc = std::exp(lc);
+      const double s2n = cc * cc * s2W;
+      double lr = 0.0;
+      for (int i = 0; i < n; ++i) {
+        const double wn = cc * W[i];
+        const double d0 = W[i] - Xb[i], dn = wn - Xb[i];
+        lr += (-0.5 * std::log(s2n) - 0.5 * dn * dn / s2n)
+            - (-0.5 * std::log(s2W) - 0.5 * d0 * d0 / s2W);
+      }
+      double pn[8];
+      for (int k = 0; k < 8; ++k) pn[k] = p[k];
+      pn[1] /= cc;
+      pn[4] /= cc;
+      if (has_xi) pn[7] /= cc;
+      const double lpr_n = logprior(pn, has_xi, s2_mu, s2_lam, s2_xi,
+                                    a_alpha, b_alpha, a_sig, b_sig);
+      const int kload = 2 + (has_xi ? 1 : 0);
+      lr += (lpr_n - cur_lpr)
+          + (-(a_w + 1.0) * 2.0 * lc - b_w * (1.0 / s2n - 1.0 / s2W))
+          + (n - kload + 2.0) * lc;
+      double a = R_finite(lr) ? (lr >= 0.0 ? 1.0 : std::exp(lr)) : 0.0;
+      if (unif_rand() < a) {
+        for (int k = 0; k < 8; ++k) p[k] = pn[k];
+        for (int i = 0; i < n; ++i) {
+          W[i]   *= cc;
+          muW[i] *= cc;
+          varW[i] *= cc * cc;
+        }
+        s2W = s2n;
+        cur_lpr = lpr_n;
+        mod.fill_q(C.lf1, C.u1, C.lu1, C.z1, W.data(), p[0], p[1], std::exp(p[2]));
+        mod.fill_y(C.lf2, C.u2, C.lu2, C.z2, W.data(), p[3], p[4], std::exp(p[5]));
+        mod.fill_th(C.th, W.data(), p[6], p[7]);
+        cur_ll = mod.loglik(C);
+        acc_px += 1.0;
+      }
+      s_px = std::exp(std::log(s_px) + gam * (a - TARGET));
+    }
+
     for (int k = 0; k < 8; ++k)  PAR(k, t - 1) = p[k];
     for (int k = 0; k < pd; ++k) PAR(8 + k, t - 1) = beta[k];
+    if (store_s2) PAR(8 + pd, t - 1) = s2W;
 
     // ---- criteria ---------------------------------------------------------
     if (t > burn) {
@@ -540,5 +745,8 @@ List run_lvc_cpp(NumericVector q, NumericVector y, NumericMatrix X,
     _["PAR"] = PAR, _["W"] = NumericVector(W.begin(), W.end()),
     _["Wmean"] = Wmean, _["Wsamp"] = Wsamp,
     _["criteria"] = crit, _["acc_blocks"] = accb,
-    _["acc_W"] = aw / (n * (double)M), _["M"] = M, _["burn"] = burn);
+    _["acc_W"] = aw / (n * (double)M),
+    _["acc_beta"] = beta_norm1 ? acc_beta / (double)M : NA_REAL,
+    _["acc_px"] = (px_da && beta_norm1) ? acc_px / (double)M : NA_REAL,
+    _["M"] = M, _["burn"] = burn);
 }

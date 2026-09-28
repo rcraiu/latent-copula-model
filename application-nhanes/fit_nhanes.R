@@ -1,6 +1,6 @@
 ## Fit the gamma-Gaussian latent variable copula model to the NHANES kidney
 ## data, one copula family and one chain per invocation:
-##     Rscript fit_nhanes.R <family> <chain> [M] [engine] [proposal]
+##     Rscript fit_nhanes.R <family> <chain> [M] [engine] [proposal] [beta]
 ##
 ## engine   "cpp" (default) uses the Rcpp sampler in lvc_sampler.cpp;
 ##          "r" uses the reference implementation in lvc_gamma_gauss.R.
@@ -8,6 +8,10 @@
 ##          adapted covariance and appends a joint (alpha, xi) update;
 ##          "blocknox" drops that extra update; "component" updates one
 ##          coordinate at a time as in the reference implementation.
+## beta     "norm1" (default) restricts beta to the unit sphere, frees the
+##          residual variance of W, and uses the PX-DA group move of Xu et al.
+##          (2016, JCGS, eq. 3.2); "free" keeps the unconstrained conjugate
+##          draw with var(W|x) = 1.
 ##
 ## Measured min ESS per second relative to "component" at M = 20000:
 ##                        joint blocks    + joint (alpha, xi)
@@ -22,6 +26,8 @@ chain    <- as.integer(args[2])
 M        <- if (length(args) >= 3) as.integer(args[3]) else 60000
 engine   <- if (length(args) >= 4) args[4] else "cpp"
 proposal <- if (length(args) >= 5) args[5] else "block"
+betaopt  <- if (length(args) >= 6) args[6] else "norm1"
+bnorm1   <- (betaopt == "norm1")
 
 NH <- readRDS("application-nhanes/nhanes_kidney.rds")
 q  <- NH$q          # 1 / cystatin C               -> gamma margin
@@ -31,8 +37,8 @@ X  <- NH$X          # age, female, BMI, SBP (standardised, no intercept)
 dir.create("fits", showWarnings = FALSE)
 out <- sprintf("output/fits/%s_chain%d.rds", family, chain)
 
-cat(sprintf("fitting %s, chain %d, n = %d, M = %d, engine = %s, proposal = %s\n",
-            family, chain, length(q), M, engine, proposal))
+cat(sprintf("fitting %s, chain %d, n = %d, M = %d, engine = %s, proposal = %s, beta = %s\n",
+            family, chain, length(q), M, engine, proposal, betaopt))
 
 if (engine == "cpp") {
   source("R/lvc_fast.R")
@@ -41,20 +47,23 @@ if (engine == "cpp") {
                         gscale = 0.1, seed = 1729 + 1000 * chain,
                         verbose = M / 6, thin_W = floor(M / 2 / 300),
                         blockwise = (proposal %in% c("block", "blocknox")),
-                        cross_block = (proposal == "block"))
+                        cross_block = (proposal == "block"),
+                        beta_norm1 = bnorm1, wvar_free = bnorm1, px_da = bnorm1)
   )
 } else {
   source("R/lvc_gamma_gauss.R")
   tm <- system.time(
     fit <- run_lvc(q, y, X, family = family, M = M, burn = floor(M / 2),
                    gscale = 0.1, seed = 1729 + 1000 * chain,
-                   verbose = M / 6, thin_W = floor(M / 2 / 300))
+                   verbose = M / 6, thin_W = floor(M / 2 / 300),
+                   beta_norm1 = bnorm1, wvar_free = bnorm1, px_da = bnorm1)
   )
 }
 fit$elapsed <- tm[["elapsed"]]
 fit$chain <- chain
 fit$engine <- engine
 fit$proposal <- proposal
+fit$beta_constraint <- betaopt
 saveRDS(fit, out)
 
 cat(sprintf("\ndone in %.1f min -> %s\n", tm[["elapsed"]] / 60, out))

@@ -46,7 +46,8 @@ rep <- matrix(NA_real_, R, length(obs), dimnames = list(NULL, names(obs)))
 
 for (r in seq_len(R)) {
   p <- S[, dr[r]]
-  W <- as.numeric(X %*% p[c("beta1", "beta2", "beta3", "beta4")]) + rnorm(n)
+  sW <- if ("s2W" %in% names(p)) sqrt(p[["s2W"]]) else 1
+  W <- as.numeric(X %*% p[c("beta1", "beta2", "beta3", "beta4")]) + rnorm(n, sd = sW)
   al <- exp(p[["lalpha"]]); sg <- exp(p[["lsigma"]])
   mq <- exp(p[["muq"]] + p[["lamq"]] * W)
   my <- p[["muy"]] + p[["lamy"]] * W

@@ -19,9 +19,11 @@ run_lvc_fast <- function(q, y, X, family = "Gaussian", M = 20000, burn = NULL,
                          prior = list(s2_mu = 100, s2_lam = 100, s2_xi = 100,
                                       a_alpha = 0.01, b_alpha = 0.01,
                                       a_sig = 0.01, b_sig = 0.01,
-                                      s2_beta = 1000),
+                                      s2_beta = 1000, a_w = 0.01, b_w = 0.01),
                          track_criteria = TRUE, thin_W = 0,
-                         blockwise = FALSE, cross_block = FALSE) {
+                         blockwise = FALSE, cross_block = FALSE,
+                         beta_norm1 = TRUE, wvar_free = TRUE,
+                         px_da = TRUE) {
   stopifnot(family %in% names(FAMILY_CODE))
   set.seed(seed)
   n <- length(q); pd <- ncol(X)
@@ -62,9 +64,12 @@ run_lvc_fast <- function(q, y, X, family = "Gaussian", M = 20000, burn = NULL,
                      FAMILY_CODE[[family]], as.integer(M), as.integer(burn),
                      gscale, as.numeric(p), as.numeric(beta),
                      bp_cov, bp_cholT, prior, as.integer(thin_W),
-                     track_criteria, as.integer(verbose), blockwise, cross_block)
+                     track_criteria, as.integer(verbose), blockwise, cross_block,
+                     beta_norm1, wvar_free, px_da)
 
-  rownames(fit$PAR) <- c(names(p), paste0("beta", seq_len(pd)))
+  rn <- c(names(p), paste0("beta", seq_len(pd)))
+  if (wvar_free) rn <- c(rn, "s2W")
+  rownames(fit$PAR) <- rn
   fit$family <- family
   if (thin_W <= 0) fit$Wsamp <- NULL
   if (!track_criteria) fit$criteria <- NULL
